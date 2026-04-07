@@ -2,7 +2,7 @@
 
 ## Project Question
 
-Can a small, reproducible R workflow be built to explore differential blood DNA methylation between public case and control samples, with rheumatoid arthritis as the likely use case, while maintaining cautious interpretation of confounding and cell-composition effects?
+Can a small, reproducible R workflow be built to explore differential blood DNA methylation between public case and control samples, using a likely rheumatoid arthritis dataset as an initial example while maintaining cautious interpretation of confounding and cell-composition effects?
 
 ## Rationale
 

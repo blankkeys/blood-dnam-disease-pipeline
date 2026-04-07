@@ -1,10 +1,10 @@
-# blood-dnam-ra-ewas-pipeline
+# blood-dnam-disease-pipeline
 
-Small, reproducible R portfolio project scaffold for an epigenome-wide association study (EWAS) using public blood DNA methylation case-control data, likely focused on rheumatoid arthritis (RA).
+Small, reproducible R portfolio project scaffold for an epigenome-wide association study (EWAS) using public blood DNA methylation case-control data, with rheumatoid arthritis as a likely first use case.
 
 ## Summary
 
-This repository is designed as a student portfolio project rather than a dissertation-scale analysis. The goal is to build a clean, explainable workflow for working with public blood DNA methylation data in R, with clear attention to quality control, confounding, and cautious interpretation.
+This repository is designed as a student portfolio project rather than a dissertation-scale analysis. The goal is to build a clean, explainable workflow for working with public blood DNA methylation disease case-control data in R, with clear attention to quality control, confounding, and cautious interpretation.
 
 ## Project Motivation
 
@@ -32,7 +32,7 @@ This project is intended to show practical bioinformatics habits that translate 
 
 ## Proposed Dataset
 
-The working target is a public blood DNA methylation case-control dataset relevant to rheumatoid arthritis or a closely related inflammatory phenotype. Final dataset selection has not yet been locked in, and this repository does not include downloaded data at this stage.
+The working target is a public blood DNA methylation case-control dataset relevant to rheumatoid arthritis or another well-documented disease phenotype. Final dataset selection has not yet been locked in, and this repository does not include downloaded data at this stage.
 
 Selection criteria will include:
 
