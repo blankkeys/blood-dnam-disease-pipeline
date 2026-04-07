@@ -4,6 +4,10 @@
 
 Can a small, reproducible R workflow be built to explore differential blood DNA methylation between public case and control samples, with rheumatoid arthritis as the likely use case, while maintaining cautious interpretation of confounding and cell-composition effects?
 
+## Rationale
+
+Public methylation datasets are useful for demonstrating data handling, quality control, modeling, and biological interpretation skills, but they also require careful framing. This project is intentionally scoped to be realistic for a portfolio: one dataset, one clear case-control comparison, transparent scripts, and modest claims. The emphasis is on showing good analytical judgment rather than maximizing novelty.
+
 ## Objectives
 
 - Select and document a suitable public blood DNA methylation dataset.
@@ -40,6 +44,7 @@ Can a small, reproducible R workflow be built to explore differential blood DNA 
 - Differential methylation result tables
 - Annotation and enrichment summaries
 - Documentation describing dataset choice, modeling decisions, and interpretation limits
+- A short, portfolio-ready narrative explaining what was done and what cannot be concluded
 
 ## Scientific Caveats
 
@@ -48,3 +53,4 @@ Can a small, reproducible R workflow be built to explore differential blood DNA 
 - Public metadata may be incomplete or uneven in quality.
 - Small sample sizes can limit power and stability.
 - Any findings should be framed as exploratory and context-dependent.
+- Annotation and enrichment steps can help summarize results, but they do not by themselves establish mechanism.
