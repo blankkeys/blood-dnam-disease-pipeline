@@ -1,33 +1,74 @@
 # Script: 04_cell_composition_estimation.R
-# Purpose: Set up a documented strategy for handling blood cell-composition effects
-# Expected inputs: Processed methylation object, sample metadata, and platform information
-# Outputs: Cell-composition planning files and starter templates for downstream interpretation
+# Purpose: Define a dataset-specific cell-composition strategy for GSE42861 before any estimation is run
+# Expected inputs: Cohort metadata, preprocessing route decisions, and a future methylation object
+# Outputs: GSE42861-specific cell-composition planning files and interpretation notes
 
 source(file.path("scripts", "00_setup.R"))
 source(file.path("functions", "qc_helpers.R"))
 
+metadata_input <- file.path(paths$data_metadata, "GSE42861_analysis_cohort.csv")
+preprocessing_input <- file.path(paths$data_metadata, "GSE42861_preprocessing_route.csv")
+
 cell_comp_files <- list(
-  estimation_plan = file.path(paths$data_metadata, "cell_composition_plan.csv"),
-  cell_comp_notes = file.path(paths$results_qc, "cell_composition_notes.txt"),
-  cell_comp_template = file.path(paths$data_processed, "cell_composition_estimates_template.csv")
+  estimation_plan = file.path(paths$data_metadata, "GSE42861_cell_composition_plan.csv"),
+  cell_comp_notes = file.path(paths$results_qc, "GSE42861_cell_composition_notes.txt"),
+  cell_comp_template = file.path(paths$data_processed, "GSE42861_cell_composition_estimates_template.csv"),
+  modeling_strategy = file.path(paths$results_qc, "GSE42861_cell_composition_modeling_strategy.csv")
 )
+
+required_inputs <- c(metadata_input, preprocessing_input)
+missing_inputs <- required_inputs[!file.exists(required_inputs)]
+
+if (length(missing_inputs) > 0) {
+  stop(
+    "Required planning input files are missing: ",
+    paste(missing_inputs, collapse = "; "),
+    call. = FALSE
+  )
+}
+
+cohort_metadata <- readr::read_csv(metadata_input, show_col_types = FALSE)
+preprocessing_route <- readr::read_csv(preprocessing_input, show_col_types = FALSE)
 
 cell_composition_plan <- tibble::tibble(
   decision_area = c(
+    "dataset_accession",
     "sample_source",
-    "reference_based_estimation_feasible",
-    "candidate_method",
+    "platform",
+    "first_pass_input_level",
+    "reference_based_estimation_feasible_now",
+    "candidate_method_later",
     "required_inputs",
     "case_control_imbalance_check",
     "planned_use_in_models"
   ),
   value = c(
-    "whole blood or peripheral blood to be confirmed",
-    NA_character_,
-    NA_character_,
-    "processed methylation object plus compatible reference framework",
-    "compare estimated proportions by group before modelling",
-    "consider as covariates or interpretive sensitivity check"
+    "GSE42861",
+    "peripheral blood leukocytes",
+    "Illumina HumanMethylation450 BeadChip",
+    "processed_matrix_first_pass",
+    "not yet, because the current first-pass route does not yet establish the exact processed-matrix structure or raw-array preprocessing context",
+    "minfi reference-based blood cell estimation after the methylation entry pathway is finalized",
+    "processed or raw methylation object with compatible probe structure plus an established estimation workflow",
+    "compare estimated cell proportions by case/control group before deciding whether to include them as covariates",
+    "treat as a later covariate or sensitivity-analysis layer, not as a silent assumption"
+  )
+)
+
+cell_composition_modeling_strategy <- tibble::tibble(
+  strategy_component = c(
+    "first_pass_model_position",
+    "why_not_included_yet",
+    "future_inclusion_trigger",
+    "interpretation_rule_if_absent",
+    "sensitivity_analysis_goal"
+  ),
+  value = c(
+    "not included in the current first-pass age+sex baseline model",
+    "cell estimates are not yet derived and the first-pass project route currently starts from metadata and processed-matrix planning rather than a finalized estimation-ready methylation object",
+    "add once the processed matrix or raw IDAT import is concretely implemented and cell estimation compatibility is confirmed",
+    "case-control associations must be discussed as potentially confounded by blood cell mixture",
+    "compare baseline results against a cell-adjusted model once estimates are available"
   )
 )
 
@@ -39,28 +80,25 @@ cell_composition_template <- tibble::tibble(
   notes = character()
 )
 
-write_csv_if_missing(cell_composition_plan, cell_comp_files$estimation_plan)
-write_csv_if_missing(cell_composition_template, cell_comp_files$cell_comp_template)
+readr::write_csv(cell_composition_plan, cell_comp_files$estimation_plan)
+readr::write_csv(cell_composition_modeling_strategy, cell_comp_files$modeling_strategy)
+readr::write_csv(cell_composition_template, cell_comp_files$cell_comp_template)
 
-if (!file.exists(cell_comp_files$cell_comp_notes)) {
-  writeLines(
-    c(
-      "Cell composition notes",
-      "",
-      "Use this file to record whether cell estimation is feasible for the selected dataset and how estimates will be used downstream.",
-      "If estimation is not possible, note how this limitation affects interpretation."
-    ),
-    con = cell_comp_files$cell_comp_notes
-  )
-}
+writeLines(
+  c(
+    "GSE42861 cell composition notes",
+    "",
+    "This script records the cell-composition handling plan only and does not estimate cell proportions yet.",
+    "GSE42861 uses blood-derived samples, so cell mixture is a major interpretation issue for any future case-control EWAS result.",
+    "Because the current first-pass route starts from metadata and a planned processed-matrix entry point, cell estimation is not yet ready to be run responsibly.",
+    "The project should explicitly acknowledge this limitation in first-pass interpretation and add cell-adjusted sensitivity analyses later when the methylation object and estimation pathway are finalized."
+  ),
+  con = cell_comp_files$cell_comp_notes
+)
 
 print(cell_composition_plan)
+print(cell_composition_modeling_strategy)
 
-# TODO: Confirm that the selected dataset uses blood-derived samples suitable for cell mixture considerations.
-# TODO: Determine whether reference-based estimation is supported for the final array platform and input format.
-# TODO: Add code to calculate cell estimates only after preprocessing choices are finalized.
-# TODO: Summarize case-control differences in estimated cell proportions before EWAS modelling.
-# TODO: Carry the chosen strategy into the design-matrix step with explicit documentation.
-
-# Interpretation reminder:
-# Cell mixture can dominate apparent disease-associated signals in blood.
+# Notes:
+# - This step defines how cell composition will be handled conceptually.
+# - No cell estimates are calculated here.
