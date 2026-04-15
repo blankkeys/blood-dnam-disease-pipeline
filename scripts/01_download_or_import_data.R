@@ -1,7 +1,7 @@
 # Script: 01_download_or_import_data.R
-# Purpose: Retrieve and parse sample metadata, then register the processed methylation matrix for the selected GEO dataset
+# Purpose: Retrieve and parse sample metadata, register the processed methylation matrix, and support a first safe matrix preview import
 # Expected inputs: Internet access, the selected GEO accession, and the project scaffold
-# Outputs: Raw and cleaned sample metadata tables plus processed-matrix registration summaries in data/metadata and results/qc
+# Outputs: Raw and cleaned sample metadata tables, processed-matrix registration summaries, and an optional aligned preview object
 
 source(file.path("scripts", "00_setup.R"))
 
@@ -18,8 +18,10 @@ dataset_config <- list(
   geo_sample_count = 689L,
   metadata_source_type = "series_matrix_header",
   processed_matrix_filename = "GSE42861_processed_methylation_matrix.txt.gz",
+  processed_matrix_preview_n = 1000L,
+  import_processed_matrix_preview = TRUE,
   notes = c(
-    "This step retrieves and parses sample metadata only.",
+    "This step retrieves and parses metadata and can import a small processed-matrix preview.",
     "It does not run downstream analysis.",
     "Parsed variables should be treated as candidate review fields until checked manually."
   )
@@ -92,6 +94,14 @@ planned_outputs <- list(
   processed_matrix_sample_map = file.path(
     paths$data_metadata,
     paste0(dataset_config$accession, "_processed_matrix_sample_map.csv")
+  ),
+  processed_matrix_preview_summary = file.path(
+    paths$results_qc,
+    paste0(dataset_config$accession, "_processed_matrix_preview_summary.csv")
+  ),
+  processed_matrix_preview_object = file.path(
+    paths$data_processed,
+    paste0(dataset_config$accession, "_processed_matrix_preview.rds")
   )
 )
 
@@ -117,6 +127,8 @@ download_gz_if_missing <- function(url, destfile, object_label) {
   )
 
   invisible(destfile)
+}
+
 read_series_matrix_header_lines <- function(gz_path) {
   con <- gzfile(gz_path, open = "rt")
   on.exit(close(con), add = TRUE)
@@ -543,6 +555,56 @@ build_processed_matrix_manifest <- function(processed_matrix_header, raw_metadat
   )
 }
 
+read_processed_matrix_preview <- function(gz_path, nrows = 1000L) {
+  utils::read.delim(
+    gzfile(gz_path, open = "rt"),
+    header = TRUE,
+    sep = "\t",
+    nrows = nrows,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+}
+
+align_processed_matrix_preview <- function(preview_df, processed_matrix_sample_map) {
+  sample_map <- processed_matrix_sample_map |>
+    dplyr::filter(present_in_processed_matrix) |>
+    dplyr::select(sample_id, sample_label, array_position_id)
+
+  sample_columns_in_preview <- intersect(sample_map$array_position_id, names(preview_df))
+
+  aligned_preview <- preview_df |>
+    dplyr::select(
+      ID_REF,
+      dplyr::all_of(sample_columns_in_preview),
+      dplyr::any_of("Pval")
+    )
+
+  list(
+    aligned_preview = aligned_preview,
+    sample_map = sample_map
+  )
+}
+
+build_processed_matrix_preview_summary <- function(preview_df, aligned_sample_map) {
+  tibble::tibble(
+    metric = c(
+      "preview_probe_rows",
+      "preview_total_columns",
+      "preview_sample_columns",
+      "preview_has_pval_column",
+      "aligned_sample_count"
+    ),
+    value = c(
+      as.character(nrow(preview_df)),
+      as.character(ncol(preview_df)),
+      as.character(sum(names(preview_df) %in% aligned_sample_map$array_position_id)),
+      as.character("Pval" %in% names(preview_df)),
+      as.character(nrow(aligned_sample_map))
+    )
+  )
+}
+
 download_gz_if_missing(metadata_url, planned_outputs$metadata_archive, "metadata archive")
 
 header_lines <- read_series_matrix_header_lines(planned_outputs$metadata_archive)
@@ -583,6 +645,38 @@ processed_matrix_registration <- build_processed_matrix_manifest(
   raw_metadata = raw_sample_metadata
 )
 
+if (dataset_config$import_processed_matrix_preview) {
+  processed_matrix_preview <- read_processed_matrix_preview(
+    gz_path = planned_outputs$processed_matrix_archive,
+    nrows = dataset_config$processed_matrix_preview_n
+  )
+
+  aligned_preview <- align_processed_matrix_preview(
+    preview_df = processed_matrix_preview,
+    processed_matrix_sample_map = processed_matrix_registration$sample_map
+  )
+
+  processed_matrix_preview_summary <- build_processed_matrix_preview_summary(
+    preview_df = aligned_preview$aligned_preview,
+    aligned_sample_map = aligned_preview$sample_map
+  )
+
+  saveRDS(
+    list(
+      dataset_accession = dataset_config$accession,
+      preview_probe_rows = dataset_config$processed_matrix_preview_n,
+      sample_map = aligned_preview$sample_map,
+      methylation_preview = aligned_preview$aligned_preview
+    ),
+    planned_outputs$processed_matrix_preview_object
+  )
+
+  readr::write_csv(
+    processed_matrix_preview_summary,
+    planned_outputs$processed_matrix_preview_summary
+  )
+}
+
 readr::write_csv(raw_sample_metadata, planned_outputs$raw_metadata)
 readr::write_csv(cleaned_sample_metadata, planned_outputs$cleaned_metadata)
 readr::write_csv(reviewed_sample_metadata, planned_outputs$reviewed_metadata)
@@ -615,9 +709,13 @@ message("Saved cohort summary to: ", planned_outputs$cohort_summary)
 message("Saved processed matrix manifest to: ", planned_outputs$processed_matrix_manifest)
 message("Saved processed matrix column summary to: ", planned_outputs$processed_matrix_column_summary)
 message("Saved processed matrix sample map to: ", planned_outputs$processed_matrix_sample_map)
+if (dataset_config$import_processed_matrix_preview) {
+  message("Saved processed matrix preview object to: ", planned_outputs$processed_matrix_preview_object)
+  message("Saved processed matrix preview summary to: ", planned_outputs$processed_matrix_preview_summary)
+}
 
 # Notes:
-# - This step prepares metadata and registers the processed methylation matrix only.
+# - This step prepares metadata, registers the processed methylation matrix, and can save a small aligned matrix preview.
 # - Parsed fields are candidate review variables, not automatically validated covariates.
 # - Variables such as treatment, severity, and technical batch should be treated as absent unless
 #   they are confirmed in the retrieved GEO metadata.
