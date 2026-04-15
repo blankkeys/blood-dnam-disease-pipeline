@@ -45,6 +45,10 @@ planned_outputs <- list(
     paths$data_metadata,
     paste0(dataset_config$accession, "_samples_cleaned.csv")
   ),
+  reviewed_metadata = file.path(
+    paths$data_metadata,
+    paste0(dataset_config$accession, "_samples_reviewed.csv")
+  ),
   field_summary = file.path(
     paths$results_qc,
     paste0(dataset_config$accession, "_metadata_field_summary.csv")
@@ -52,6 +56,10 @@ planned_outputs <- list(
   missingness_summary = file.path(
     paths$results_qc,
     paste0(dataset_config$accession, "_metadata_missingness_summary.csv")
+  ),
+  value_summary = file.path(
+    paths$results_qc,
+    paste0(dataset_config$accession, "_metadata_value_summary.csv")
   )
 )
 
@@ -246,6 +254,51 @@ clean_gse42861_metadata <- function(raw_metadata) {
   )
 }
 
+review_gse42861_metadata <- function(cleaned_metadata) {
+  reviewed <- cleaned_metadata
+
+  if ("subject" %in% names(reviewed)) {
+    reviewed$subject_reviewed <- dplyr::case_when(
+      reviewed$subject == "Patient" ~ "patient",
+      reviewed$subject == "Normal" ~ "control_source_label",
+      TRUE ~ NA_character_
+    )
+  }
+
+  if ("disease_state" %in% names(reviewed)) {
+    reviewed$disease_state_reviewed <- dplyr::case_when(
+      reviewed$disease_state == "rheumatoid arthritis" ~ "rheumatoid_arthritis",
+      reviewed$disease_state == "Normal" ~ "normal",
+      TRUE ~ NA_character_
+    )
+  }
+
+  if ("gender" %in% names(reviewed)) {
+    reviewed$sex_reviewed <- dplyr::case_when(
+      reviewed$gender == "f" ~ "female",
+      reviewed$gender == "m" ~ "male",
+      TRUE ~ NA_character_
+    )
+  }
+
+  if ("smoking_status" %in% names(reviewed)) {
+    reviewed$smoking_status_reviewed <- dplyr::case_when(
+      reviewed$smoking_status == "current" ~ "current",
+      reviewed$smoking_status == "ex" ~ "former",
+      reviewed$smoking_status == "never" ~ "never",
+      reviewed$smoking_status == "occasional" ~ "occasional",
+      reviewed$smoking_status == "na" ~ NA_character_,
+      TRUE ~ NA_character_
+    )
+  }
+
+  if ("candidate_case_control_status" %in% names(reviewed)) {
+    reviewed$case_control_status_reviewed <- reviewed$candidate_case_control_status
+  }
+
+  reviewed
+}
+
 summarise_metadata_fields <- function(tbl, table_name) {
   tibble::tibble(
     table_name = table_name,
@@ -313,6 +366,33 @@ build_candidate_covariate_missingness <- function(cleaned_metadata) {
   )
 }
 
+build_value_summary <- function(reviewed_metadata) {
+  fields_to_review <- intersect(
+    c(
+      "subject",
+      "subject_reviewed",
+      "disease_state",
+      "disease_state_reviewed",
+      "gender",
+      "sex_reviewed",
+      "smoking_status",
+      "smoking_status_reviewed",
+      "candidate_case_control_status",
+      "case_control_status_reviewed"
+    ),
+    names(reviewed_metadata)
+  )
+
+  dplyr::bind_rows(
+    lapply(fields_to_review, function(field_name) {
+      reviewed_metadata |>
+        dplyr::count(.data[[field_name]], name = "n", .drop = FALSE) |>
+        dplyr::rename(value = .data[[field_name]]) |>
+        dplyr::mutate(field_name = field_name, .before = 1)
+    })
+  )
+}
+
 download_metadata_archive(metadata_url, planned_outputs$metadata_archive)
 
 header_lines <- read_series_matrix_header_lines(planned_outputs$metadata_archive)
@@ -327,23 +407,30 @@ if (nrow(raw_sample_metadata) != dataset_config$geo_sample_count) {
 }
 
 cleaned_sample_metadata <- clean_gse42861_metadata(raw_sample_metadata)
+reviewed_sample_metadata <- review_gse42861_metadata(cleaned_sample_metadata)
 
 field_summary <- dplyr::bind_rows(
   summarise_metadata_fields(raw_sample_metadata, "raw"),
-  summarise_metadata_fields(cleaned_sample_metadata, "cleaned")
+  summarise_metadata_fields(cleaned_sample_metadata, "cleaned"),
+  summarise_metadata_fields(reviewed_sample_metadata, "reviewed")
 )
 
-missingness_summary <- build_candidate_covariate_missingness(cleaned_sample_metadata)
+missingness_summary <- build_candidate_covariate_missingness(reviewed_sample_metadata)
+value_summary <- build_value_summary(reviewed_sample_metadata)
 
 readr::write_csv(raw_sample_metadata, planned_outputs$raw_metadata)
 readr::write_csv(cleaned_sample_metadata, planned_outputs$cleaned_metadata)
+readr::write_csv(reviewed_sample_metadata, planned_outputs$reviewed_metadata)
 readr::write_csv(field_summary, planned_outputs$field_summary)
 readr::write_csv(missingness_summary, planned_outputs$missingness_summary)
+readr::write_csv(value_summary, planned_outputs$value_summary)
 
 message("Saved raw sample metadata to: ", planned_outputs$raw_metadata)
 message("Saved cleaned sample metadata to: ", planned_outputs$cleaned_metadata)
+message("Saved reviewed sample metadata to: ", planned_outputs$reviewed_metadata)
 message("Saved metadata field summary to: ", planned_outputs$field_summary)
 message("Saved metadata missingness summary to: ", planned_outputs$missingness_summary)
+message("Saved metadata value summary to: ", planned_outputs$value_summary)
 
 # Notes:
 # - This is a metadata preparation step only.
