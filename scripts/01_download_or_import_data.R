@@ -1,7 +1,7 @@
 # Script: 01_download_or_import_data.R
-# Purpose: Retrieve and parse sample metadata for the selected GEO dataset
+# Purpose: Retrieve and parse sample metadata, then register the processed methylation matrix for the selected GEO dataset
 # Expected inputs: Internet access, the selected GEO accession, and the project scaffold
-# Outputs: Raw and cleaned sample metadata tables plus QC-style metadata summaries in data/metadata and results/qc
+# Outputs: Raw and cleaned sample metadata tables plus processed-matrix registration summaries in data/metadata and results/qc
 
 source(file.path("scripts", "00_setup.R"))
 
@@ -17,9 +17,10 @@ dataset_config <- list(
   array = "Illumina HumanMethylation450 BeadChip",
   geo_sample_count = 689L,
   metadata_source_type = "series_matrix_header",
+  processed_matrix_filename = "GSE42861_processed_methylation_matrix.txt.gz",
   notes = c(
     "This step retrieves and parses sample metadata only.",
-    "It does not import methylation values or run downstream analysis.",
+    "It does not run downstream analysis.",
     "Parsed variables should be treated as candidate review fields until checked manually."
   )
 )
@@ -30,6 +31,13 @@ metadata_url <- paste0(
   "/matrix/",
   dataset_config$accession,
   "_series_matrix.txt.gz"
+)
+
+processed_matrix_url <- paste0(
+  "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE42nnn/",
+  dataset_config$accession,
+  "/suppl/",
+  dataset_config$processed_matrix_filename
 )
 
 planned_outputs <- list(
@@ -68,16 +76,32 @@ planned_outputs <- list(
   cohort_summary = file.path(
     paths$results_qc,
     paste0(dataset_config$accession, "_analysis_cohort_summary.csv")
+  ),
+  processed_matrix_archive = file.path(
+    paths$data_raw,
+    dataset_config$processed_matrix_filename
+  ),
+  processed_matrix_manifest = file.path(
+    paths$data_metadata,
+    paste0(dataset_config$accession, "_processed_matrix_manifest.csv")
+  ),
+  processed_matrix_column_summary = file.path(
+    paths$results_qc,
+    paste0(dataset_config$accession, "_processed_matrix_column_summary.csv")
+  ),
+  processed_matrix_sample_map = file.path(
+    paths$data_metadata,
+    paste0(dataset_config$accession, "_processed_matrix_sample_map.csv")
   )
 )
 
-download_metadata_archive <- function(url, destfile) {
+download_gz_if_missing <- function(url, destfile, object_label) {
   if (file.exists(destfile)) {
-    message("Using existing metadata archive: ", destfile)
+    message("Using existing ", object_label, ": ", destfile)
     return(invisible(destfile))
   }
 
-  message("Downloading GEO metadata archive: ", basename(destfile))
+  message("Downloading GEO ", object_label, ": ", basename(destfile))
 
   tryCatch(
     {
@@ -93,8 +117,6 @@ download_metadata_archive <- function(url, destfile) {
   )
 
   invisible(destfile)
-}
-
 read_series_matrix_header_lines <- function(gz_path) {
   con <- gzfile(gz_path, open = "rt")
   on.exit(close(con), add = TRUE)
@@ -116,6 +138,12 @@ read_series_matrix_header_lines <- function(gz_path) {
   }
 
   header_lines
+}
+
+read_first_gz_line <- function(gz_path) {
+  con <- gzfile(gz_path, open = "rt")
+  on.exit(close(con), add = TRUE)
+  readLines(con, n = 1)
 }
 
 strip_geo_quotes <- function(x) {
@@ -452,7 +480,70 @@ build_cohort_summary <- function(cohort_metadata) {
   )
 }
 
-download_metadata_archive(metadata_url, planned_outputs$metadata_archive)
+extract_array_position_id <- function(supplementary_file) {
+  stringr::str_match(
+    supplementary_file,
+    "GSM\\d+_([^_]+_R\\d{2}C\\d{2})_(?:Grn|Red)\\.idat\\.gz$"
+  )[, 2]
+}
+
+build_processed_matrix_manifest <- function(processed_matrix_header, raw_metadata) {
+  header_fields <- strsplit(processed_matrix_header, "\t", fixed = TRUE)[[1]]
+
+  processed_matrix_columns <- tibble::tibble(
+    column_name = header_fields,
+    column_type = dplyr::case_when(
+      header_fields == "ID_REF" ~ "probe_id",
+      header_fields == "Pval" ~ "p_value_summary",
+      TRUE ~ "sample_signal"
+    )
+  )
+
+  sample_columns <- processed_matrix_columns |>
+    dplyr::filter(column_type == "sample_signal") |>
+    dplyr::pull(column_name)
+
+  sample_map <- raw_metadata |>
+    dplyr::transmute(
+      sample_id = geo_accession,
+      sample_label = title,
+      source_name = source_name_ch1,
+      supplementary_file,
+      array_position_id = extract_array_position_id(supplementary_file)
+    ) |>
+    dplyr::mutate(
+      present_in_processed_matrix = array_position_id %in% sample_columns
+    )
+
+  manifest <- tibble::tibble(
+    decision_area = c(
+      "dataset_accession",
+      "processed_matrix_file",
+      "row_id_column",
+      "sample_column_count",
+      "special_trailing_column",
+      "mapped_sample_count",
+      "unmapped_sample_count"
+    ),
+    value = c(
+      dataset_config$accession,
+      basename(planned_outputs$processed_matrix_archive),
+      "ID_REF",
+      as.character(length(sample_columns)),
+      ifelse("Pval" %in% header_fields, "Pval", "none_detected"),
+      as.character(sum(sample_map$present_in_processed_matrix, na.rm = TRUE)),
+      as.character(sum(!sample_map$present_in_processed_matrix, na.rm = TRUE))
+    )
+  )
+
+  list(
+    manifest = manifest,
+    column_summary = processed_matrix_columns,
+    sample_map = sample_map
+  )
+}
+
+download_gz_if_missing(metadata_url, planned_outputs$metadata_archive, "metadata archive")
 
 header_lines <- read_series_matrix_header_lines(planned_outputs$metadata_archive)
 raw_sample_metadata <- parse_sample_metadata_from_header(header_lines)
@@ -480,6 +571,18 @@ missingness_summary <- build_candidate_covariate_missingness(analysis_cohort_met
 value_summary <- build_value_summary(analysis_cohort_metadata)
 cohort_summary <- build_cohort_summary(analysis_cohort_metadata)
 
+download_gz_if_missing(
+  processed_matrix_url,
+  planned_outputs$processed_matrix_archive,
+  "processed methylation matrix"
+)
+
+processed_matrix_header <- read_first_gz_line(planned_outputs$processed_matrix_archive)
+processed_matrix_registration <- build_processed_matrix_manifest(
+  processed_matrix_header = processed_matrix_header,
+  raw_metadata = raw_sample_metadata
+)
+
 readr::write_csv(raw_sample_metadata, planned_outputs$raw_metadata)
 readr::write_csv(cleaned_sample_metadata, planned_outputs$cleaned_metadata)
 readr::write_csv(reviewed_sample_metadata, planned_outputs$reviewed_metadata)
@@ -488,6 +591,18 @@ readr::write_csv(field_summary, planned_outputs$field_summary)
 readr::write_csv(missingness_summary, planned_outputs$missingness_summary)
 readr::write_csv(value_summary, planned_outputs$value_summary)
 readr::write_csv(cohort_summary, planned_outputs$cohort_summary)
+readr::write_csv(
+  processed_matrix_registration$manifest,
+  planned_outputs$processed_matrix_manifest
+)
+readr::write_csv(
+  processed_matrix_registration$column_summary,
+  planned_outputs$processed_matrix_column_summary
+)
+readr::write_csv(
+  processed_matrix_registration$sample_map,
+  planned_outputs$processed_matrix_sample_map
+)
 
 message("Saved raw sample metadata to: ", planned_outputs$raw_metadata)
 message("Saved cleaned sample metadata to: ", planned_outputs$cleaned_metadata)
@@ -497,9 +612,12 @@ message("Saved metadata field summary to: ", planned_outputs$field_summary)
 message("Saved metadata missingness summary to: ", planned_outputs$missingness_summary)
 message("Saved metadata value summary to: ", planned_outputs$value_summary)
 message("Saved cohort summary to: ", planned_outputs$cohort_summary)
+message("Saved processed matrix manifest to: ", planned_outputs$processed_matrix_manifest)
+message("Saved processed matrix column summary to: ", planned_outputs$processed_matrix_column_summary)
+message("Saved processed matrix sample map to: ", planned_outputs$processed_matrix_sample_map)
 
 # Notes:
-# - This is a metadata preparation step only.
+# - This step prepares metadata and registers the processed methylation matrix only.
 # - Parsed fields are candidate review variables, not automatically validated covariates.
 # - Variables such as treatment, severity, and technical batch should be treated as absent unless
 #   they are confirmed in the retrieved GEO metadata.
