@@ -1,7 +1,7 @@
 # Script: 01_download_or_import_data.R
-# Purpose: Set up a documented import plan for the selected GEO methylation dataset without downloading it yet
-# Expected inputs: A confirmed GEO accession and metadata decisions for the first-pass portfolio workflow
-# Outputs: Metadata templates, a GEO-specific import configuration object, and starter field-mapping notes
+# Purpose: Retrieve and parse sample metadata for the selected GEO dataset
+# Expected inputs: Internet access, the selected GEO accession, and the project scaffold
+# Outputs: Raw and cleaned sample metadata tables plus QC-style metadata summaries in data/metadata and results/qc
 
 source(file.path("scripts", "00_setup.R"))
 
@@ -16,173 +16,337 @@ dataset_config <- list(
   platform = "GPL13534",
   array = "Illumina HumanMethylation450 BeadChip",
   geo_sample_count = 689L,
-  preferred_input = "raw_idat_if_available",
-  fallback_input = "processed_matrix",
-  expected_geo_fields = c(
-    "geo_accession",
-    "title",
-    "source_name_ch1",
-    "characteristics_ch1"
-  ),
-  candidate_metadata_variables = c(
-    "case_control_status",
-    "age",
-    "sex",
-    "smoking_status",
-    "batch_or_array_position",
-    "serology_or_subtype_labels"
-  ),
+  metadata_source_type = "series_matrix_header",
   notes = c(
-    "GEO series page reports both raw IDAT availability and processed methylation tables.",
-    "Phenotype definitions and covariates must still be verified directly from GEO sample metadata.",
-    "Do not download data until the metadata extraction plan is reviewed."
+    "This step retrieves and parses sample metadata only.",
+    "It does not import methylation values or run downstream analysis.",
+    "Parsed variables should be treated as candidate review fields until checked manually."
   )
+)
+
+metadata_url <- paste0(
+  "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE42nnn/",
+  dataset_config$accession,
+  "/matrix/",
+  dataset_config$accession,
+  "_series_matrix.txt.gz"
 )
 
 planned_outputs <- list(
-  metadata_template = file.path(paths$data_metadata, "sample_metadata_template.csv"),
-  import_log_template = file.path(paths$data_metadata, "import_log_template.csv"),
-  dataset_config_rds = file.path(paths$data_metadata, "dataset_config.rds"),
-  geo_field_map = file.path(paths$data_metadata, "geo_field_map.csv"),
-  import_strategy_notes = file.path(paths$data_metadata, "import_strategy_notes.txt"),
-  geo_metadata_columns = file.path(paths$data_metadata, "geo_metadata_columns.csv"),
-  geo_metadata_preview = file.path(paths$data_metadata, "geo_metadata_preview.csv")
-)
-
-geo_field_map <- tibble::tibble(
-  geo_field = c(
-    "geo_accession",
-    "title",
-    "source_name_ch1",
-    "characteristics_ch1",
-    "supplementary_file"
+  metadata_archive = file.path(
+    paths$data_metadata,
+    paste0(dataset_config$accession, "_series_matrix.txt.gz")
   ),
-  planned_project_field = c(
-    "sample_id",
-    "sample_label",
-    "sample_source",
-    "metadata_key_value_pairs",
-    "raw_or_processed_source_file"
+  raw_metadata = file.path(
+    paths$data_metadata,
+    paste0(dataset_config$accession, "_samples_raw.csv")
   ),
-  notes = c(
-    "Expected GSM sample accession",
-    "Short sample label from GEO sample record",
-    "Useful for confirming peripheral blood leukocyte source",
-    "Likely contains phenotype and covariate fields to parse carefully",
-    "Use to record IDAT or processed file provenance when import begins"
+  cleaned_metadata = file.path(
+    paths$data_metadata,
+    paste0(dataset_config$accession, "_samples_cleaned.csv")
+  ),
+  field_summary = file.path(
+    paths$results_qc,
+    paste0(dataset_config$accession, "_metadata_field_summary.csv")
+  ),
+  missingness_summary = file.path(
+    paths$results_qc,
+    paste0(dataset_config$accession, "_metadata_missingness_summary.csv")
   )
 )
 
-geoquery_import_plan <- list(
-  series_function = "GEOquery::getGEO('GSE42861', GSEMatrix = TRUE)",
-  sample_metadata_source = "pData on returned ExpressionSet object or parsed GEO sample records",
-  raw_data_check = "Confirm supplementary files and raw IDAT archive before deciding import path",
-  first_pass_goal = "Inspect metadata structure only; do not download full raw data yet"
-)
-
-inspect_geo_metadata <- FALSE
-metadata_preview_n <- 10L
-
-fetch_geo_metadata_only <- function(accession) {
-  if (!requireNamespace("GEOquery", quietly = TRUE)) {
-    stop("GEOquery is required for metadata inspection. Install it before setting inspect_geo_metadata <- TRUE.")
+download_metadata_archive <- function(url, destfile) {
+  if (file.exists(destfile)) {
+    message("Using existing metadata archive: ", destfile)
+    return(invisible(destfile))
   }
 
-  geo_object <- GEOquery::getGEO(accession, GSEMatrix = TRUE)
+  message("Downloading GEO metadata archive: ", basename(destfile))
 
-  if (is.list(geo_object)) {
-    geo_object <- geo_object[[1]]
+  tryCatch(
+    {
+      utils::download.file(url = url, destfile = destfile, mode = "wb", quiet = FALSE)
+    },
+    error = function(e) {
+      stop(
+        "Failed to retrieve GEO metadata archive from ", url, ". ",
+        "Check network access and GEO availability. Original error: ", conditionMessage(e),
+        call. = FALSE
+      )
+    }
+  )
+
+  invisible(destfile)
+}
+
+read_series_matrix_header_lines <- function(gz_path) {
+  con <- gzfile(gz_path, open = "rt")
+  on.exit(close(con), add = TRUE)
+
+  header_lines <- character()
+
+  repeat {
+    line <- readLines(con, n = 1)
+
+    if (length(line) == 0) {
+      break
+    }
+
+    if (identical(line, "!series_matrix_table_begin")) {
+      break
+    }
+
+    header_lines <- c(header_lines, line)
   }
 
-  Biobase::pData(geo_object)
+  header_lines
 }
 
-metadata_template <- tibble::tibble(
-  sample_id = character(),
-  sample_label = character(),
-  geo_accession = character(),
-  group = character(),
-  source_name = character(),
-  age = numeric(),
-  sex = character(),
-  smoking_status = character(),
-  treatment_status = character(),
-  batch = character(),
-  serology_subtype = character(),
-  source_file = character(),
-  inclusion_flag = logical(),
-  notes = character()
-)
-
-import_log_template <- tibble::tibble(
-  import_date = character(),
-  accession = character(),
-  source_type = character(),
-  file_name = character(),
-  file_type = character(),
-  destination = character(),
-  download_performed = logical(),
-  checksum_recorded = logical(),
-  notes = character()
-)
-
-if (!file.exists(planned_outputs$metadata_template)) {
-  readr::write_csv(metadata_template, planned_outputs$metadata_template)
+strip_geo_quotes <- function(x) {
+  x <- gsub('^"', "", x)
+  x <- gsub('"$', "", x)
+  x
 }
 
-if (!file.exists(planned_outputs$import_log_template)) {
-  readr::write_csv(import_log_template, planned_outputs$import_log_template)
+parse_sample_metadata_from_header <- function(header_lines) {
+  sample_lines <- header_lines[grepl("^!Sample_", header_lines)]
+
+  if (length(sample_lines) == 0) {
+    stop("No !Sample_ metadata lines were found in the GEO series-matrix header.", call. = FALSE)
+  }
+
+  parsed_lines <- lapply(sample_lines, function(line) {
+    parts <- strsplit(line, "\t", fixed = TRUE)[[1]]
+    field_name <- sub("^!Sample_", "", parts[1])
+    values <- strip_geo_quotes(parts[-1])
+
+    list(field_name = field_name, values = values)
+  })
+
+  field_names <- vapply(parsed_lines, `[[`, character(1), "field_name")
+  unique_field_names <- make.unique(field_names, sep = "_")
+  value_lengths <- vapply(parsed_lines, function(x) length(x$values), integer(1))
+
+  if (length(unique(value_lengths)) != 1) {
+    stop("Sample metadata fields do not all contain the same number of samples.", call. = FALSE)
+  }
+
+  raw_metadata <- tibble::as_tibble(
+    as.data.frame(
+      setNames(
+        lapply(parsed_lines, `[[`, "values"),
+        unique_field_names
+      ),
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+  )
+
+  raw_metadata
 }
 
-if (!file.exists(planned_outputs$geo_field_map)) {
-  readr::write_csv(geo_field_map, planned_outputs$geo_field_map)
+parse_characteristic_column <- function(x) {
+  non_missing <- x[!is.na(x) & nzchar(x)]
+
+  if (length(non_missing) == 0) {
+    return(NULL)
+  }
+
+  matches <- regexec("^([^:]+):\\s*(.*)$", non_missing)
+  captures <- regmatches(non_missing, matches)
+  valid <- vapply(captures, length, integer(1)) == 3L
+
+  if (!all(valid)) {
+    return(NULL)
+  }
+
+  keys <- unique(trimws(vapply(captures, `[`, character(1), 2)))
+
+  if (length(keys) != 1) {
+    return(NULL)
+  }
+
+  full_matches <- regmatches(x, regexec("^([^:]+):\\s*(.*)$", x))
+  values <- vapply(
+    full_matches,
+    function(match) {
+      if (length(match) == 3L) {
+        trimws(match[3])
+      } else {
+        NA_character_
+      }
+    },
+    character(1)
+  )
+
+  parsed_name <- janitor::make_clean_names(keys)
+
+  list(
+    parsed_name = parsed_name,
+    parsed_values = values,
+    source_key = keys
+  )
 }
 
-saveRDS(dataset_config, planned_outputs$dataset_config_rds)
+clean_gse42861_metadata <- function(raw_metadata) {
+  cleaned <- dplyr::transmute(
+    raw_metadata,
+    sample_id = geo_accession,
+    sample_label = title,
+    source_name = source_name_ch1,
+    platform_id = platform_id
+  )
 
-if (!file.exists(planned_outputs$import_strategy_notes)) {
-  writeLines(
-    c(
-      "Import strategy notes",
-      "",
-      "Selected GEO accession: GSE42861",
-      "Planned first-pass import route: inspect series and sample metadata with GEOquery before choosing raw IDAT or processed-matrix entry point.",
-      "Expected metadata fields to inspect: source_name_ch1 and characteristics_ch1.",
-      "Expected phenotype variables to verify: case/control status, age, sex, smoking, and any serology subgroup labels.",
-      "Do not download the raw archive until metadata structure and project scope are confirmed."
+  characteristic_columns <- grep("^characteristics_ch1", names(raw_metadata), value = TRUE)
+  parsed_characteristics <- lapply(characteristic_columns, function(col_name) {
+    parsed <- parse_characteristic_column(raw_metadata[[col_name]])
+
+    if (is.null(parsed)) {
+      return(NULL)
+    }
+
+    parsed$source_column <- col_name
+    parsed
+  })
+
+  parsed_characteristics <- parsed_characteristics[!vapply(parsed_characteristics, is.null, logical(1))]
+
+  if (length(parsed_characteristics) > 0) {
+    parsed_names <- make.unique(
+      vapply(parsed_characteristics, `[[`, character(1), "parsed_name"),
+      sep = "_"
+    )
+
+    for (i in seq_along(parsed_characteristics)) {
+      cleaned[[parsed_names[i]]] <- parsed_characteristics[[i]]$parsed_values
+    }
+  }
+
+  cleaned$sample_number_from_title <- suppressWarnings(
+    as.integer(stringr::str_extract(cleaned$sample_label, "(?<=sample )\\d+"))
+  )
+
+  if ("subject" %in% names(cleaned)) {
+    cleaned$candidate_case_control_status <- dplyr::case_when(
+      cleaned$subject == "Patient" ~ "case",
+      cleaned$subject == "Normal" ~ "control",
+      TRUE ~ NA_character_
+    )
+  }
+
+  if ("age" %in% names(cleaned)) {
+    cleaned$age <- suppressWarnings(as.integer(cleaned$age))
+  }
+
+  raw_characteristic_cols <- raw_metadata[, characteristic_columns, drop = FALSE]
+
+  dplyr::bind_cols(
+    cleaned,
+    raw_characteristic_cols
+  )
+}
+
+summarise_metadata_fields <- function(tbl, table_name) {
+  tibble::tibble(
+    table_name = table_name,
+    field_name = names(tbl),
+    non_missing_n = vapply(
+      tbl,
+      function(x) sum(!is.na(x) & nzchar(as.character(x))),
+      integer(1)
     ),
-    con = planned_outputs$import_strategy_notes
+    missing_n = vapply(
+      tbl,
+      function(x) sum(is.na(x) | !nzchar(as.character(x))),
+      integer(1)
+    ),
+    unique_non_missing_n = vapply(
+      tbl,
+      function(x) dplyr::n_distinct(x[!is.na(x) & nzchar(as.character(x))]),
+      integer(1)
+    ),
+    example_values = vapply(
+      tbl,
+      function(x) {
+        vals <- unique(as.character(x[!is.na(x) & nzchar(as.character(x))]))
+        vals <- vals[seq_len(min(length(vals), 3))]
+        paste(vals, collapse = " | ")
+      },
+      character(1)
+    )
   )
 }
 
-message("Prepared dataset import templates in: ", paths$data_metadata)
-message("Selected GEO accession: ", dataset_config$accession)
-
-if (inspect_geo_metadata) {
-  geo_metadata <- fetch_geo_metadata_only(dataset_config$accession)
-
-  geo_metadata_columns <- tibble::tibble(
-    column_name = names(geo_metadata),
-    is_expected = names(geo_metadata) %in% dataset_config$expected_geo_fields
+build_candidate_covariate_missingness <- function(cleaned_metadata) {
+  candidate_fields <- intersect(
+    c(
+      "disease_state",
+      "subject",
+      "candidate_case_control_status",
+      "age",
+      "gender",
+      "smoking_status",
+      "cell_type",
+      "source_name",
+      "platform_id"
+    ),
+    names(cleaned_metadata)
   )
 
-  preview_columns <- intersect(
-    c("geo_accession", "title", "source_name_ch1", "characteristics_ch1"),
-    names(geo_metadata)
+  tibble::tibble(
+    field_name = candidate_fields,
+    non_missing_n = vapply(
+      cleaned_metadata[candidate_fields],
+      function(x) sum(!is.na(x) & nzchar(as.character(x))),
+      integer(1)
+    ),
+    missing_n = vapply(
+      cleaned_metadata[candidate_fields],
+      function(x) sum(is.na(x) | !nzchar(as.character(x))),
+      integer(1)
+    ),
+    unique_non_missing_n = vapply(
+      cleaned_metadata[candidate_fields],
+      function(x) dplyr::n_distinct(x[!is.na(x) & nzchar(as.character(x))]),
+      integer(1)
+    )
   )
-
-  geo_metadata_preview <- tibble::as_tibble(
-    utils::head(geo_metadata[, preview_columns, drop = FALSE], metadata_preview_n)
-  )
-
-  readr::write_csv(geo_metadata_columns, planned_outputs$geo_metadata_columns)
-  readr::write_csv(geo_metadata_preview, planned_outputs$geo_metadata_preview)
-
-  message("Wrote GEO metadata column summary to: ", planned_outputs$geo_metadata_columns)
-  message("Wrote GEO metadata preview to: ", planned_outputs$geo_metadata_preview)
 }
 
-# TODO: Parse characteristics_ch1 into explicit phenotype and covariate fields after inspecting live metadata.
-# TODO: Replace generic group labels with verified case/control definitions from GEO metadata.
-# TODO: Decide whether the first real import should begin from the processed matrix or the raw IDAT archive.
-# TODO: Record source URLs, file provenance, and any manual metadata transformations explicitly.
+download_metadata_archive(metadata_url, planned_outputs$metadata_archive)
+
+header_lines <- read_series_matrix_header_lines(planned_outputs$metadata_archive)
+raw_sample_metadata <- parse_sample_metadata_from_header(header_lines)
+
+if (nrow(raw_sample_metadata) != dataset_config$geo_sample_count) {
+  stop(
+    "Retrieved ", nrow(raw_sample_metadata), " samples, but expected ",
+    dataset_config$geo_sample_count, " for ", dataset_config$accession, ".",
+    call. = FALSE
+  )
+}
+
+cleaned_sample_metadata <- clean_gse42861_metadata(raw_sample_metadata)
+
+field_summary <- dplyr::bind_rows(
+  summarise_metadata_fields(raw_sample_metadata, "raw"),
+  summarise_metadata_fields(cleaned_sample_metadata, "cleaned")
+)
+
+missingness_summary <- build_candidate_covariate_missingness(cleaned_sample_metadata)
+
+readr::write_csv(raw_sample_metadata, planned_outputs$raw_metadata)
+readr::write_csv(cleaned_sample_metadata, planned_outputs$cleaned_metadata)
+readr::write_csv(field_summary, planned_outputs$field_summary)
+readr::write_csv(missingness_summary, planned_outputs$missingness_summary)
+
+message("Saved raw sample metadata to: ", planned_outputs$raw_metadata)
+message("Saved cleaned sample metadata to: ", planned_outputs$cleaned_metadata)
+message("Saved metadata field summary to: ", planned_outputs$field_summary)
+message("Saved metadata missingness summary to: ", planned_outputs$missingness_summary)
+
+# Notes:
+# - This is a metadata preparation step only.
+# - Parsed fields are candidate review variables, not automatically validated covariates.
+# - Variables such as treatment, severity, and technical batch should be treated as absent unless
+#   they are confirmed in the retrieved GEO metadata.
