@@ -49,6 +49,10 @@ planned_outputs <- list(
     paths$data_metadata,
     paste0(dataset_config$accession, "_samples_reviewed.csv")
   ),
+  analysis_cohort_metadata = file.path(
+    paths$data_metadata,
+    paste0(dataset_config$accession, "_analysis_cohort.csv")
+  ),
   field_summary = file.path(
     paths$results_qc,
     paste0(dataset_config$accession, "_metadata_field_summary.csv")
@@ -60,6 +64,10 @@ planned_outputs <- list(
   value_summary = file.path(
     paths$results_qc,
     paste0(dataset_config$accession, "_metadata_value_summary.csv")
+  ),
+  cohort_summary = file.path(
+    paths$results_qc,
+    paste0(dataset_config$accession, "_analysis_cohort_summary.csv")
   )
 )
 
@@ -393,6 +401,57 @@ build_value_summary <- function(reviewed_metadata) {
   )
 }
 
+select_first_pass_analysis_cohort <- function(reviewed_metadata) {
+  reviewed_metadata |>
+    dplyr::mutate(
+      include_first_pass = dplyr::case_when(
+        is.na(case_control_status_reviewed) ~ FALSE,
+        TRUE ~ TRUE
+      ),
+      first_pass_exclusion_reason = dplyr::case_when(
+        is.na(case_control_status_reviewed) ~ "missing_case_control_status",
+        TRUE ~ NA_character_
+      ),
+      smoking_missing_flag = is.na(smoking_status_reviewed),
+      age_missing_flag = is.na(age),
+      sex_missing_flag = is.na(sex_reviewed),
+      first_pass_cohort_note = dplyr::case_when(
+        include_first_pass & smoking_missing_flag ~ "included_but_missing_smoking_status",
+        include_first_pass ~ "included_in_initial_case_control_cohort",
+        TRUE ~ "excluded_from_initial_case_control_cohort"
+      )
+    )
+}
+
+build_cohort_summary <- function(cohort_metadata) {
+  dplyr::bind_rows(
+    cohort_metadata |>
+      dplyr::count(
+        summary_type = "include_first_pass",
+        summary_value = ifelse(include_first_pass, "included", "excluded"),
+        name = "n"
+      ),
+    cohort_metadata |>
+      dplyr::count(
+        summary_type = "case_control_status_reviewed",
+        summary_value = case_control_status_reviewed,
+        name = "n"
+      ),
+    cohort_metadata |>
+      dplyr::count(
+        summary_type = "smoking_missing_flag",
+        summary_value = ifelse(smoking_missing_flag, "missing", "present"),
+        name = "n"
+      ),
+    cohort_metadata |>
+      dplyr::count(
+        summary_type = "first_pass_cohort_note",
+        summary_value = first_pass_cohort_note,
+        name = "n"
+      )
+  )
+}
+
 download_metadata_archive(metadata_url, planned_outputs$metadata_archive)
 
 header_lines <- read_series_matrix_header_lines(planned_outputs$metadata_archive)
@@ -408,29 +467,36 @@ if (nrow(raw_sample_metadata) != dataset_config$geo_sample_count) {
 
 cleaned_sample_metadata <- clean_gse42861_metadata(raw_sample_metadata)
 reviewed_sample_metadata <- review_gse42861_metadata(cleaned_sample_metadata)
+analysis_cohort_metadata <- select_first_pass_analysis_cohort(reviewed_sample_metadata)
 
 field_summary <- dplyr::bind_rows(
   summarise_metadata_fields(raw_sample_metadata, "raw"),
   summarise_metadata_fields(cleaned_sample_metadata, "cleaned"),
-  summarise_metadata_fields(reviewed_sample_metadata, "reviewed")
+  summarise_metadata_fields(reviewed_sample_metadata, "reviewed"),
+  summarise_metadata_fields(analysis_cohort_metadata, "analysis_cohort")
 )
 
-missingness_summary <- build_candidate_covariate_missingness(reviewed_sample_metadata)
-value_summary <- build_value_summary(reviewed_sample_metadata)
+missingness_summary <- build_candidate_covariate_missingness(analysis_cohort_metadata)
+value_summary <- build_value_summary(analysis_cohort_metadata)
+cohort_summary <- build_cohort_summary(analysis_cohort_metadata)
 
 readr::write_csv(raw_sample_metadata, planned_outputs$raw_metadata)
 readr::write_csv(cleaned_sample_metadata, planned_outputs$cleaned_metadata)
 readr::write_csv(reviewed_sample_metadata, planned_outputs$reviewed_metadata)
+readr::write_csv(analysis_cohort_metadata, planned_outputs$analysis_cohort_metadata)
 readr::write_csv(field_summary, planned_outputs$field_summary)
 readr::write_csv(missingness_summary, planned_outputs$missingness_summary)
 readr::write_csv(value_summary, planned_outputs$value_summary)
+readr::write_csv(cohort_summary, planned_outputs$cohort_summary)
 
 message("Saved raw sample metadata to: ", planned_outputs$raw_metadata)
 message("Saved cleaned sample metadata to: ", planned_outputs$cleaned_metadata)
 message("Saved reviewed sample metadata to: ", planned_outputs$reviewed_metadata)
+message("Saved analysis cohort metadata to: ", planned_outputs$analysis_cohort_metadata)
 message("Saved metadata field summary to: ", planned_outputs$field_summary)
 message("Saved metadata missingness summary to: ", planned_outputs$missingness_summary)
 message("Saved metadata value summary to: ", planned_outputs$value_summary)
+message("Saved cohort summary to: ", planned_outputs$cohort_summary)
 
 # Notes:
 # - This is a metadata preparation step only.
