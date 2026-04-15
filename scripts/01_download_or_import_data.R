@@ -44,7 +44,9 @@ planned_outputs <- list(
   import_log_template = file.path(paths$data_metadata, "import_log_template.csv"),
   dataset_config_rds = file.path(paths$data_metadata, "dataset_config.rds"),
   geo_field_map = file.path(paths$data_metadata, "geo_field_map.csv"),
-  import_strategy_notes = file.path(paths$data_metadata, "import_strategy_notes.txt")
+  import_strategy_notes = file.path(paths$data_metadata, "import_strategy_notes.txt"),
+  geo_metadata_columns = file.path(paths$data_metadata, "geo_metadata_columns.csv"),
+  geo_metadata_preview = file.path(paths$data_metadata, "geo_metadata_preview.csv")
 )
 
 geo_field_map <- tibble::tibble(
@@ -77,6 +79,23 @@ geoquery_import_plan <- list(
   raw_data_check = "Confirm supplementary files and raw IDAT archive before deciding import path",
   first_pass_goal = "Inspect metadata structure only; do not download full raw data yet"
 )
+
+inspect_geo_metadata <- FALSE
+metadata_preview_n <- 10L
+
+fetch_geo_metadata_only <- function(accession) {
+  if (!requireNamespace("GEOquery", quietly = TRUE)) {
+    stop("GEOquery is required for metadata inspection. Install it before setting inspect_geo_metadata <- TRUE.")
+  }
+
+  geo_object <- GEOquery::getGEO(accession, GSEMatrix = TRUE)
+
+  if (is.list(geo_object)) {
+    geo_object <- geo_object[[1]]
+  }
+
+  Biobase::pData(geo_object)
+}
 
 metadata_template <- tibble::tibble(
   sample_id = character(),
@@ -139,7 +158,31 @@ if (!file.exists(planned_outputs$import_strategy_notes)) {
 message("Prepared dataset import templates in: ", paths$data_metadata)
 message("Selected GEO accession: ", dataset_config$accession)
 
-# TODO: Add metadata-inspection code using the planned GEOquery route once we are ready to inspect live sample records.
+if (inspect_geo_metadata) {
+  geo_metadata <- fetch_geo_metadata_only(dataset_config$accession)
+
+  geo_metadata_columns <- tibble::tibble(
+    column_name = names(geo_metadata),
+    is_expected = names(geo_metadata) %in% dataset_config$expected_geo_fields
+  )
+
+  preview_columns <- intersect(
+    c("geo_accession", "title", "source_name_ch1", "characteristics_ch1"),
+    names(geo_metadata)
+  )
+
+  geo_metadata_preview <- tibble::as_tibble(
+    utils::head(geo_metadata[, preview_columns, drop = FALSE], metadata_preview_n)
+  )
+
+  readr::write_csv(geo_metadata_columns, planned_outputs$geo_metadata_columns)
+  readr::write_csv(geo_metadata_preview, planned_outputs$geo_metadata_preview)
+
+  message("Wrote GEO metadata column summary to: ", planned_outputs$geo_metadata_columns)
+  message("Wrote GEO metadata preview to: ", planned_outputs$geo_metadata_preview)
+}
+
+# TODO: Parse characteristics_ch1 into explicit phenotype and covariate fields after inspecting live metadata.
 # TODO: Replace generic group labels with verified case/control definitions from GEO metadata.
 # TODO: Decide whether the first real import should begin from the processed matrix or the raw IDAT archive.
 # TODO: Record source URLs, file provenance, and any manual metadata transformations explicitly.
